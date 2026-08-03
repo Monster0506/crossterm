@@ -411,4 +411,18 @@ mod tests {
             ]
         );
     }
+
+    // Reproduces crossterm-rs/crossterm#1072: each UTF-16 code unit of a
+    // non-BMP char arrives as down(high), up(high), down(low), up(low).
+    #[test]
+    fn test_handle_surrogate_survives_down_up_duplication() {
+        let mut buf = None;
+        const HIGH: u16 = 0xD83D;
+        const LOW: u16 = 0xDE00;
+
+        assert_eq!(handle_surrogate(&mut buf, HIGH), None); // down(high)
+        assert_eq!(handle_surrogate(&mut buf, HIGH), None); // up(high), duplicate
+        assert_eq!(handle_surrogate(&mut buf, LOW), Some('\u{1F600}')); // down(low): pairs
+        assert_eq!(handle_surrogate(&mut buf, LOW), None); // up(low): buffer empty, no-op
+    }
 }
