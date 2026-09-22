@@ -55,10 +55,8 @@ where
         Hide                  // hide the cursor
     )?;
 
-    let mut y = 1;
-    for line in TEXT.split('\n') {
+    for (y, line) in (1..).zip(TEXT.split('\n')) {
         queue!(write, MoveTo(1, y), Print(line.to_string()))?;
-        y += 1;
     }
 
     write.flush()?;
@@ -90,6 +88,6 @@ fn main() {
         '1' => print!(".."),
         '2' => print!("/"),
         '3' => print!("~"),
-        _ => println!("{}", TEXT),
+        _ => println!("{TEXT}"),
     }
 }

@@ -3,13 +3,13 @@
 #[cfg(feature = "events")]
 use crate::event::KeyboardEnhancementFlags;
 use crate::terminal::{
-    sys::file_descriptor::{tty_fd, FileDesc},
     WindowSize,
+    sys::file_descriptor::{FileDesc, tty_fd},
 };
 #[cfg(feature = "libc")]
 use libc::{
-    cfmakeraw, ioctl, tcgetattr, tcsetattr, termios as Termios, winsize, STDOUT_FILENO, TCSANOW,
-    TIOCGWINSZ,
+    STDOUT_FILENO, TCSANOW, TIOCGWINSZ, cfmakeraw, ioctl, tcgetattr, tcsetattr, termios as Termios,
+    winsize,
 };
 use parking_lot::Mutex;
 #[cfg(not(feature = "libc"))]
@@ -67,7 +67,7 @@ pub(crate) fn window_size() -> io::Result<WindowSize> {
         ws_ypixel: 0,
     };
 
-    let file = File::open("/dev/tty").map(|file| (FileDesc::new(file.into_raw_fd(), true)));
+    let file = File::open("/dev/tty").map(|file| FileDesc::new(file.into_raw_fd(), true));
     let fd = if let Ok(file) = &file {
         file.raw_fd()
     } else {
@@ -84,7 +84,7 @@ pub(crate) fn window_size() -> io::Result<WindowSize> {
 
 #[cfg(not(feature = "libc"))]
 pub(crate) fn window_size() -> io::Result<WindowSize> {
-    let file = File::open("/dev/tty").map(|file| (FileDesc::Owned(file.into())));
+    let file = File::open("/dev/tty").map(|file| FileDesc::Owned(file.into()));
     let fd = if let Ok(file) = &file {
         file.as_fd()
     } else {
@@ -214,7 +214,7 @@ fn query_keyboard_enhancement_flags_nonraw() -> io::Result<Option<KeyboardEnhanc
 fn query_keyboard_enhancement_flags_raw() -> io::Result<Option<KeyboardEnhancementFlags>> {
     use crate::event::{
         filter::{KeyboardEnhancementFlagsFilter, PrimaryDeviceAttributesFilter},
-        poll_internal, read_internal, InternalEvent,
+        internal::{self, InternalEvent},
     };
     use std::io::Write;
     use std::time::Duration;
@@ -230,10 +230,13 @@ fn query_keyboard_enhancement_flags_raw() -> io::Result<Option<KeyboardEnhanceme
     // ESC [ c          Query primary device attributes.
     const QUERY: &[u8] = b"\x1B[?u\x1B[c";
 
-    let result = File::open("/dev/tty").and_then(|mut file| {
-        file.write_all(QUERY)?;
-        file.flush()
-    });
+    let result = File::options()
+        .write(true)
+        .open("/dev/tty")
+        .and_then(|mut file| {
+            file.write_all(QUERY)?;
+            file.flush()
+        });
     if result.is_err() {
         let mut stdout = io::stdout();
         stdout.write_all(QUERY)?;
@@ -241,23 +244,22 @@ fn query_keyboard_enhancement_flags_raw() -> io::Result<Option<KeyboardEnhanceme
     }
 
     loop {
-        match poll_internal(
+        match internal::poll(
             Some(Duration::from_millis(2000)),
             &KeyboardEnhancementFlagsFilter,
         ) {
             Ok(true) => {
-                match read_internal(&KeyboardEnhancementFlagsFilter) {
+                match internal::read(&KeyboardEnhancementFlagsFilter) {
                     Ok(InternalEvent::KeyboardEnhancementFlags(current_flags)) => {
                         // Flush the PrimaryDeviceAttributes out of the event queue.
-                        read_internal(&PrimaryDeviceAttributesFilter).ok();
+                        internal::read(&PrimaryDeviceAttributesFilter).ok();
                         return Ok(Some(current_flags));
                     }
                     _ => return Ok(None),
                 }
             }
             Ok(false) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
+                return Err(io::Error::other(
                     "The keyboard enhancement status could not be read within a normal duration",
                 ));
             }
@@ -278,11 +280,7 @@ fn tput_value(arg: &str) -> Option<u16> {
         .filter_map(|b| char::from(b).to_digit(10))
         .fold(0, |v, n| v * 10 + n as u16);
 
-    if value > 0 {
-        Some(value)
-    } else {
-        None
-    }
+    if value > 0 { Some(value) } else { None }
 }
 
 /// Returns the size of the screen as determined by tput.

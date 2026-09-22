@@ -6,7 +6,9 @@ use crate::event::source::unix::UnixInternalEventSource;
 use crate::event::source::windows::WindowsEventSource;
 #[cfg(feature = "event-stream")]
 use crate::event::sys::Waker;
-use crate::event::{filter::Filter, source::EventSource, timeout::PollTimeout, InternalEvent};
+use crate::event::{
+    filter::Filter, internal::InternalEvent, source::EventSource, timeout::PollTimeout,
+};
 
 /// Can be used to read `InternalEvent`s.
 pub(crate) struct InternalEventReader {
@@ -51,12 +53,7 @@ impl InternalEventReader {
 
         let event_source = match self.source.as_mut() {
             Some(source) => source,
-            None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Failed to initialize input reader",
-                ))
-            }
+            None => return Err(std::io::Error::other("Failed to initialize input reader")),
         };
 
         let poll_timeout = PollTimeout::new(timeout);
@@ -94,34 +91,52 @@ impl InternalEventReader {
         }
     }
 
+    /// Blocks the thread until a valid `InternalEvent` can be read.
+    ///
+    /// Internally, we use `try_read`, which buffers the events that do not fulfill the filter
+    /// conditions to prevent stalling the thread in an infinite loop.
     pub(crate) fn read<F>(&mut self, filter: &F) -> io::Result<InternalEvent>
     where
         F: Filter,
     {
-        let mut skipped_events = VecDeque::new();
-
+        // blocks the thread until a valid event is found
         loop {
-            while let Some(event) = self.events.pop_front() {
-                if filter.eval(&event) {
-                    while let Some(event) = skipped_events.pop_front() {
-                        self.events.push_back(event);
-                    }
-
-                    return Ok(event);
-                } else {
-                    // We can not directly write events back to `self.events`.
-                    // If we did, we would put our self's into an endless loop
-                    // that would enqueue -> dequeue -> enqueue etc.
-                    // This happens because `poll` in this function will always return true if there are events in it's.
-                    // And because we just put the non-fulfilling event there this is going to be the case.
-                    // Instead we can store them into the temporary buffer,
-                    // and then when the filter is fulfilled write all events back in order.
-                    skipped_events.push_back(event);
-                }
+            if let Some(event) = self.try_read(filter) {
+                return Ok(event);
             }
 
             let _ = self.poll(None, filter)?;
         }
+    }
+
+    /// Attempts to read the first valid `InternalEvent`.
+    ///
+    /// This function checks all events in the queue, and stores events that do not match the
+    /// filter in a buffer to be added back to the queue after all items have been evaluated. We
+    /// must buffer non-fulfilling events because, if added directly back to the queue, they would
+    /// result in an infinite loop, rechecking events that have already been evaluated against the
+    /// filter.
+    pub(crate) fn try_read<F>(&mut self, filter: &F) -> Option<InternalEvent>
+    where
+        F: Filter,
+    {
+        // check all events, storing events that do not match the filter in the `skipped_events`
+        // buffer to be added back later
+        let mut skipped_events = Vec::new();
+        let mut result = None;
+        while let Some(event) = self.events.pop_front() {
+            if filter.eval(&event) {
+                result = Some(event);
+                break;
+            }
+
+            skipped_events.push(event);
+        }
+
+        // push all skipped events back to the event queue
+        self.events.extend(skipped_events);
+
+        result
     }
 }
 
@@ -152,12 +167,16 @@ mod tests {
         };
 
         assert!(reader.poll(None, &InternalEventFilter).is_err());
-        assert!(reader
-            .poll(Some(Duration::from_secs(0)), &InternalEventFilter)
-            .is_err());
-        assert!(reader
-            .poll(Some(Duration::from_secs(10)), &InternalEventFilter)
-            .is_err());
+        assert!(
+            reader
+                .poll(Some(Duration::from_secs(0)), &InternalEventFilter)
+                .is_err()
+        );
+        assert!(
+            reader
+                .poll(Some(Duration::from_secs(10)), &InternalEventFilter)
+                .is_err()
+        );
     }
 
     #[test]
@@ -231,6 +250,28 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn test_try_read_does_not_consume_skipped_event() {
+        const SKIPPED_EVENT: InternalEvent = InternalEvent::Event(Event::Resize(10, 10));
+        const CURSOR_EVENT: InternalEvent = InternalEvent::CursorPosition(10, 20);
+
+        let mut reader = InternalEventReader {
+            events: vec![SKIPPED_EVENT, CURSOR_EVENT].into(),
+            source: None,
+            skipped_events: Vec::with_capacity(32),
+        };
+
+        assert_eq!(
+            reader.try_read(&CursorPositionFilter).unwrap(),
+            CURSOR_EVENT
+        );
+        assert_eq!(
+            reader.try_read(&InternalEventFilter).unwrap(),
+            SKIPPED_EVENT
+        );
+    }
+
+    #[test]
     fn test_poll_timeouts_if_source_has_no_events() {
         let source = FakeSource::default();
 
@@ -240,9 +281,11 @@ mod tests {
             skipped_events: Vec::with_capacity(32),
         };
 
-        assert!(!reader
-            .poll(Some(Duration::from_secs(0)), &InternalEventFilter)
-            .unwrap());
+        assert!(
+            !reader
+                .poll(Some(Duration::from_secs(0)), &InternalEventFilter)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -256,9 +299,11 @@ mod tests {
         };
 
         assert!(reader.poll(None, &InternalEventFilter).unwrap());
-        assert!(reader
-            .poll(Some(Duration::from_secs(0)), &InternalEventFilter)
-            .unwrap());
+        assert!(
+            reader
+                .poll(Some(Duration::from_secs(0)), &InternalEventFilter)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -308,9 +353,11 @@ mod tests {
         assert_eq!(reader.read(&InternalEventFilter).unwrap(), EVENT);
         assert_eq!(reader.read(&InternalEventFilter).unwrap(), EVENT);
         assert_eq!(reader.read(&InternalEventFilter).unwrap(), EVENT);
-        assert!(!reader
-            .poll(Some(Duration::from_secs(0)), &InternalEventFilter)
-            .unwrap());
+        assert!(
+            !reader
+                .poll(Some(Duration::from_secs(0)), &InternalEventFilter)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -325,7 +372,7 @@ mod tests {
             reader
                 .poll(Some(Duration::from_secs(0)), &InternalEventFilter)
                 .err()
-                .map(|e| format!("{:?}", &e.kind())),
+                .map(|e| format!("{:?}", e.kind())),
             Some(format!("{:?}", io::ErrorKind::Other))
         );
     }
@@ -342,7 +389,7 @@ mod tests {
             reader
                 .read(&InternalEventFilter)
                 .err()
-                .map(|e| format!("{:?}", &e.kind())),
+                .map(|e| format!("{:?}", e.kind())),
             Some(format!("{:?}", io::ErrorKind::Other))
         );
     }
@@ -361,9 +408,11 @@ mod tests {
 
         assert_eq!(reader.read(&InternalEventFilter).unwrap(), EVENT);
         assert!(reader.read(&InternalEventFilter).is_err());
-        assert!(reader
-            .poll(Some(Duration::from_secs(0)), &InternalEventFilter)
-            .unwrap());
+        assert!(
+            reader
+                .poll(Some(Duration::from_secs(0)), &InternalEventFilter)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -393,7 +442,7 @@ mod tests {
         fn new(events: &[InternalEvent]) -> FakeSource {
             FakeSource {
                 events: events.to_vec().into(),
-                error: Some(io::Error::new(io::ErrorKind::Other, "")),
+                error: Some(io::Error::other("")),
             }
         }
 

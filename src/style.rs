@@ -117,11 +117,12 @@ use std::{
 };
 
 use crate::command::execute_fmt;
-use crate::{csi, impl_display, Command};
+use crate::{Command, csi, impl_display};
 
 pub use self::{
     attributes::Attributes,
     content_style::ContentStyle,
+    hyperlink::{EndHyperlink, StartHyperlink},
     styled_content::StyledContent,
     stylize::Stylize,
     types::{Attribute, Color, Colored, Colors},
@@ -129,6 +130,7 @@ pub use self::{
 
 mod attributes;
 mod content_style;
+mod hyperlink;
 mod styled_content;
 mod stylize;
 mod sys;
@@ -207,6 +209,9 @@ pub struct SetForegroundColor(pub Color);
 
 impl Command for SetForegroundColor {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        if Colored::ansi_color_disabled_memoized() {
+            return Ok(());
+        }
         write!(f, csi!("{}m"), Colored::ForegroundColor(self.0))
     }
 
@@ -231,6 +236,9 @@ pub struct SetBackgroundColor(pub Color);
 
 impl Command for SetBackgroundColor {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        if Colored::ansi_color_disabled_memoized() {
+            return Ok(());
+        }
         write!(f, csi!("{}m"), Colored::BackgroundColor(self.0))
     }
 
@@ -255,13 +263,15 @@ pub struct SetUnderlineColor(pub Color);
 
 impl Command for SetUnderlineColor {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        if Colored::ansi_color_disabled_memoized() {
+            return Ok(());
+        }
         write!(f, csi!("{}m"), Colored::UnderlineColor(self.0))
     }
 
     #[cfg(windows)]
     fn execute_winapi(&self) -> std::io::Result<()> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        Err(std::io::Error::other(
             "SetUnderlineColor not supported by winapi.",
         ))
     }
@@ -293,6 +303,9 @@ pub struct SetColors(pub Colors);
 
 impl Command for SetColors {
     fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        if Colored::ansi_color_disabled_memoized() {
+            return Ok(());
+        }
         // Writing both foreground and background colors in one command resulted in about 20% more
         // FPS (20 to 24 fps) on a fullscreen (171x51) app that writes every cell with a different
         // foreground and background color, compared to separately using the SetForegroundColor and

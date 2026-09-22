@@ -1,10 +1,10 @@
-//! Demonstrates how to read events asynchronously with async-std.
+//! Demonstrates how to read events asynchronously with smol.
 //!
-//! cargo run --features="event-stream" --example event-stream-async-std
+//! cargo run --features="event-stream" --example event-stream-smol
 
 use std::{io::stdout, time::Duration};
 
-use futures::{future::FutureExt, select, StreamExt};
+use futures::{StreamExt, future::FutureExt, select};
 use futures_timer::Delay;
 
 use crossterm::{
@@ -14,7 +14,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode},
 };
 
-const HELP: &str = r#"EventStream based on futures_util::stream::Stream with async-std
+const HELP: &str = r#"EventStream based on futures_util::stream::Stream with smol
  - Keyboard, mouse and terminal resize events enabled
  - Prints "." every second if there's no event
  - Hit "c" to print current cursor position
@@ -33,7 +33,7 @@ async fn print_events() {
             maybe_event = event => {
                 match maybe_event {
                     Some(Ok(event)) => {
-                        println!("Event::{:?}\r", event);
+                        println!("Event::{event:?}\r");
 
                         if event == Event::Key(KeyCode::Char('c').into()) {
                             println!("Cursor position: {:?}\r", position());
@@ -43,7 +43,7 @@ async fn print_events() {
                             break;
                         }
                     }
-                    Some(Err(e)) => println!("Error: {:?}\r", e),
+                    Some(Err(e)) => println!("Error: {e:?}\r"),
                     None => break,
                 }
             }
@@ -52,14 +52,14 @@ async fn print_events() {
 }
 
 fn main() -> std::io::Result<()> {
-    println!("{}", HELP);
+    println!("{HELP}");
 
     enable_raw_mode()?;
 
     let mut stdout = stdout();
     execute!(stdout, EnableMouseCapture)?;
 
-    async_std::task::block_on(print_events());
+    smol::block_on(print_events());
 
     execute!(stdout, DisableMouseCapture)?;
 

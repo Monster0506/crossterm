@@ -56,6 +56,8 @@
 //!     [`ResetColor`](style/struct.ResetColor.html), [`SetColors`](style/struct.SetColors.html)
 //!   - Attributes - [`SetAttribute`](style/struct.SetAttribute.html), [`SetAttributes`](style/struct.SetAttributes.html),
 //!     [`PrintStyledContent`](style/struct.PrintStyledContent.html)
+//!   - Hyperlinks - [`StartHyperlink`](style/struct.StartHyperlink.html),
+//!     [`EndHyperlink`](style/struct.EndHyperlink.html)
 //! - Module [`terminal`](terminal/index.html)
 //!   - Scrolling - [`ScrollUp`](terminal/struct.ScrollUp.html),
 //!     [`ScrollDown`](terminal/struct.ScrollDown.html)
@@ -67,7 +69,7 @@
 //!   - Alternate screen - [`EnterAlternateScreen`](terminal/struct.EnterAlternateScreen.html),
 //!     [`LeaveAlternateScreen`](terminal/struct.LeaveAlternateScreen.html)
 //! - Module [`clipboard`](clipboard/index.html) (requires
-//!     [`feature = "osc52"`](#optional-features))
+//!   [`feature = "osc52"`](#optional-features))
 //!   - Clipboard - [`CopyToClipboard`](clipboard/struct.CopyToClipboard.html)
 //!
 //! ### Command Execution
@@ -226,8 +228,9 @@
 //!   Ok(())
 //! }
 //!```
-//! ## Feature Flags
-#![doc = document_features::document_features!()]
+//!
+#![cfg_attr(feature = "document-features", doc = "## Feature Flags")]
+#![cfg_attr(feature = "document-features", doc = document_features::document_features!())]
 //!
 //! [write]: https://doc.rust-lang.org/std/io/trait.Write.html
 //! [stdout]: https://doc.rust-lang.org/std/io/fn.stdout.html
@@ -246,9 +249,6 @@ pub mod style;
 /// A module to work with the terminal.
 pub mod terminal;
 
-/// A module to query if the current instance is a tty.
-pub mod tty;
-
 /// A module for clipboard interaction
 #[cfg(feature = "osc52")]
 pub mod clipboard;
@@ -260,4 +260,6 @@ mod command;
 pub(crate) mod macros;
 
 #[cfg(all(windows, not(feature = "windows")))]
-compile_error!("Compiling on Windows with \"windows\" feature disabled. Feature \"windows\" should only be disabled when project will never be compiled on Windows.");
+compile_error!(
+    "Compiling on Windows with \"windows\" feature disabled. Feature \"windows\" should only be disabled when project will never be compiled on Windows."
+);

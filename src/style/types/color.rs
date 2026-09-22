@@ -27,9 +27,10 @@ use crate::style::parse_next_u8;
 ///
 /// Most UNIX terminals and Windows 10 consoles support additional colors.
 /// See [`Color::Rgb`] or [`Color::AnsiValue`] for more info.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Hash)]
+#[derive(Default, Copy, Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Hash)]
 pub enum Color {
     /// Resets the terminal color.
+    #[default]
     Reset,
 
     /// Black color.
@@ -246,10 +247,8 @@ impl serde::ser::Serialize for Color {
 
         if str.is_empty() {
             match *self {
-                Color::AnsiValue(value) => serializer.serialize_str(&format!("ansi_({})", value)),
-                Color::Rgb { r, g, b } => {
-                    serializer.serialize_str(&format!("rgb_({},{},{})", r, g, b))
-                }
+                Color::AnsiValue(value) => serializer.serialize_str(&format!("ansi_({value})")),
+                Color::Rgb { r, g, b } => serializer.serialize_str(&format!("rgb_({r},{g},{b})")),
                 _ => Err(serde::ser::Error::custom("Could not serialize enum type")),
             }
         } else {

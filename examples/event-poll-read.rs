@@ -6,7 +6,7 @@ use std::{io, time::Duration};
 
 use crossterm::{
     cursor::position,
-    event::{poll, read, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, poll, read},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode},
 };
@@ -25,7 +25,7 @@ fn print_events() -> io::Result<()> {
             // It's guaranteed that read() won't block if `poll` returns `Ok(true)`
             let event = read()?;
 
-            println!("Event::{:?}\r", event);
+            println!("Event::{event:?}\r");
 
             if event == Event::Key(KeyCode::Char('c').into()) {
                 println!("Cursor position: {:?}\r", position());
@@ -44,7 +44,7 @@ fn print_events() -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
-    println!("{}", HELP);
+    println!("{HELP}");
 
     enable_raw_mode()?;
 
@@ -52,7 +52,7 @@ fn main() -> io::Result<()> {
     execute!(stdout, EnableMouseCapture)?;
 
     if let Err(e) = print_events() {
-        println!("Error: {:?}\r", e);
+        println!("Error: {e:?}\r");
     }
 
     execute!(stdout, DisableMouseCapture)?;

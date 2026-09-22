@@ -5,7 +5,7 @@ use crate::event::{
     MediaKeyCode, ModifierKeyCode, MouseButton, MouseEvent, MouseEventKind,
 };
 
-use super::super::super::InternalEvent;
+use crate::event::internal::InternalEvent;
 
 // Event parsing
 //
@@ -20,7 +20,7 @@ use super::super::super::InternalEvent;
 //
 
 fn could_not_parse_event_error() -> io::Error {
-    io::Error::new(io::ErrorKind::Other, "Could not parse an event.")
+    io::Error::other("Could not parse an event.")
 }
 
 pub(crate) fn parse_event(
@@ -250,8 +250,8 @@ pub(crate) fn parse_csi_cursor_position(buffer: &[u8]) -> io::Result<Option<Inte
 
     let mut split = s.split(';');
 
-    let y = next_parsed::<u16>(&mut split)? - 1;
-    let x = next_parsed::<u16>(&mut split)? - 1;
+    let y = next_parsed::<u16>(&mut split)?.saturating_sub(1);
+    let x = next_parsed::<u16>(&mut split)?.saturating_sub(1);
 
     Ok(Some(InternalEvent::CursorPosition(x, y)))
 }
@@ -347,7 +347,6 @@ fn parse_key_event_kind(kind: u8) -> KeyEventKind {
 
 pub(crate) fn parse_csi_modifier_key_code(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
     assert!(buffer.starts_with(b"\x1B[")); // ESC [
-                                           //
     let s = std::str::from_utf8(&buffer[2..buffer.len() - 1])
         .map_err(|_| could_not_parse_event_error())?;
     let mut split = s.split(';');
@@ -676,8 +675,8 @@ pub(crate) fn parse_csi_rxvt_mouse(buffer: &[u8]) -> io::Result<Option<InternalE
         .ok_or_else(could_not_parse_event_error)?;
     let (kind, modifiers) = parse_cb(cb)?;
 
-    let cx = next_parsed::<u16>(&mut split)? - 1;
-    let cy = next_parsed::<u16>(&mut split)? - 1;
+    let cx = next_parsed::<u16>(&mut split)?.saturating_sub(1);
+    let cy = next_parsed::<u16>(&mut split)?.saturating_sub(1);
 
     Ok(Some(InternalEvent::Event(Event::Mouse(MouseEvent {
         kind,
@@ -703,9 +702,11 @@ pub(crate) fn parse_csi_normal_mouse(buffer: &[u8]) -> io::Result<Option<Interna
 
     // See http://www.xfree86.org/current/ctlseqs.html#Mouse%20Tracking
     // The upper left character position on the terminal is denoted as 1,1.
-    // Subtract 1 to keep it synced with cursor
-    let cx = u16::from(buffer[4].saturating_sub(32)) - 1;
-    let cy = u16::from(buffer[5].saturating_sub(32)) - 1;
+    // Subtract 1 to keep it synced with cursor. Folded with the +32 protocol
+    // offset into a single saturating op so coord byte 32 (1-indexed origin)
+    // clamps to 0 rather than underflowing.
+    let cx = u16::from(buffer[4].saturating_sub(33));
+    let cy = u16::from(buffer[5].saturating_sub(33));
 
     Ok(Some(InternalEvent::Event(Event::Mouse(MouseEvent {
         kind,
@@ -734,8 +735,8 @@ pub(crate) fn parse_csi_sgr_mouse(buffer: &[u8]) -> io::Result<Option<InternalEv
     // See http://www.xfree86.org/current/ctlseqs.html#Mouse%20Tracking
     // The upper left character position on the terminal is denoted as 1,1.
     // Subtract 1 to keep it synced with cursor
-    let cx = next_parsed::<u16>(&mut split)? - 1;
-    let cy = next_parsed::<u16>(&mut split)? - 1;
+    let cx = next_parsed::<u16>(&mut split)?.saturating_sub(1);
+    let cy = next_parsed::<u16>(&mut split)?.saturating_sub(1);
 
     // When button 3 in Cb is used to represent mouse release, you can't tell which button was
     // released. SGR mode solves this by having the sequence end with a lowercase m if it's a
@@ -1105,6 +1106,57 @@ mod tests {
         );
     }
 
+    // Regression: coord byte 32 (the protocol-encoded origin) used
+    // to panic in debug (wrap to 65535 in release) because the
+    // parser did `saturating_sub(32)` then `- 1`. Folded into a
+    // single `saturating_sub(33)`; see the comment on the parser.
+    #[test]
+    fn test_parse_csi_normal_mouse_zero_coords_clamp() {
+        assert_eq!(
+            parse_csi_normal_mouse(b"\x1B[M\x20\x20\x20").unwrap(),
+            Some(InternalEvent::Event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::empty(),
+            })))
+        );
+    }
+
+    // Pins the 1-indexed → 0-indexed mapping: byte 33 = column 1
+    // on the wire → column 0 in the event; byte 34 on the row
+    // axis → row 1.
+    #[test]
+    fn test_parse_csi_normal_mouse_one_is_zero_indexed() {
+        assert_eq!(
+            parse_csi_normal_mouse(b"\x1B[M\x20\x21\x22").unwrap(),
+            Some(InternalEvent::Event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 0,
+                row: 1,
+                modifiers: KeyModifiers::empty(),
+            })))
+        );
+    }
+
+    // ESC [ M reaches this parser purely by byte pattern, so coord
+    // bytes below the protocol floor (< 32) can arrive from pastes
+    // containing terminal escape data, subprocess output emitting
+    // VT100 DL (CSI M = Delete Line), or a garbled SGR-enable.
+    // Must clamp to 0 rather than wrap or panic.
+    #[test]
+    fn test_parse_csi_normal_mouse_sub_protocol_bytes_clamp() {
+        assert_eq!(
+            parse_csi_normal_mouse(b"\x1B[M\x20\x10\x05").unwrap(),
+            Some(InternalEvent::Event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::empty(),
+            })))
+        );
+    }
+
     #[test]
     fn test_parse_csi_sgr_mouse() {
         assert_eq!(
@@ -1140,6 +1192,37 @@ mod tests {
                 kind: MouseEventKind::Up(MouseButton::Left),
                 column: 19,
                 row: 9,
+                modifiers: KeyModifiers::empty(),
+            })))
+        );
+    }
+
+    // Regression: column or row of 0 in an SGR mouse sequence used
+    // to panic in debug (wrap to 65535 in release) because the
+    // parser unconditionally subtracted 1 from the wire value.
+    #[test]
+    fn test_parse_csi_sgr_mouse_zero_coords_clamp() {
+        assert_eq!(
+            parse_csi_sgr_mouse(b"\x1B[<0;0;0M").unwrap(),
+            Some(InternalEvent::Event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::empty(),
+            })))
+        );
+    }
+
+    // Pins the 1-indexed → 0-indexed mapping for the SGR parser:
+    // wire value 1 lands at coordinate 0.
+    #[test]
+    fn test_parse_csi_sgr_mouse_one_is_zero_indexed() {
+        assert_eq!(
+            parse_csi_sgr_mouse(b"\x1B[<0;1;2M").unwrap(),
+            Some(InternalEvent::Event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 0,
+                row: 1,
                 modifiers: KeyModifiers::empty(),
             })))
         );

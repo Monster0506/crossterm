@@ -17,7 +17,7 @@ const ENABLE_MOUSE_MODE: u32 = 0x0010 | 0x0080 | 0x0008;
 /// console mode if it's initialized.
 static ORIGINAL_CONSOLE_MODE: AtomicU64 = AtomicU64::new(u64::MAX);
 
-/// Initializes the default console color. It will will be skipped if it has already been initialized.
+/// Initializes the default console color. It will be skipped if it has already been initialized.
 fn init_original_console_mode(original_mode: u32) {
     let _ = ORIGINAL_CONSOLE_MODE.compare_exchange(
         u64::MAX,
@@ -30,7 +30,7 @@ fn init_original_console_mode(original_mode: u32) {
 /// Returns the original console color, make sure to call `init_console_color` before calling this function. Otherwise this function will panic.
 fn original_console_mode() -> std::io::Result<u32> {
     u32::try_from(ORIGINAL_CONSOLE_MODE.load(Ordering::Relaxed))
-        .map_err(|_| io::Error::new(io::ErrorKind::Other, "Initial console modes not set"))
+        .map_err(|_| io::Error::other("Initial console modes not set"))
 }
 
 pub(crate) fn enable_mouse_capture() -> std::io::Result<()> {

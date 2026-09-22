@@ -119,6 +119,7 @@
 //! them (`event-*`).
 
 pub(crate) mod filter;
+pub(crate) mod internal;
 pub(crate) mod read;
 pub(crate) mod source;
 #[cfg(feature = "event-stream")]
@@ -131,36 +132,15 @@ use derive_more::derive::IsVariant;
 #[cfg(feature = "event-stream")]
 pub use stream::EventStream;
 
-use crate::event::{
-    filter::{EventFilter, Filter},
-    read::InternalEventReader,
-    timeout::PollTimeout,
+use crate::{
+    Command, csi,
+    event::{filter::EventFilter, internal::InternalEvent},
 };
-use crate::{csi, Command};
-use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
 use std::fmt::{self, Display};
 use std::time::Duration;
 
 use bitflags::bitflags;
 use std::hash::{Hash, Hasher};
-
-/// Static instance of `InternalEventReader`.
-/// This needs to be static because there can be one event reader.
-static INTERNAL_EVENT_READER: Mutex<Option<InternalEventReader>> = parking_lot::const_mutex(None);
-
-pub(crate) fn lock_internal_event_reader() -> MappedMutexGuard<'static, InternalEventReader> {
-    MutexGuard::map(INTERNAL_EVENT_READER.lock(), |reader| {
-        reader.get_or_insert_with(InternalEventReader::default)
-    })
-}
-fn try_lock_internal_event_reader_for(
-    duration: Duration,
-) -> Option<MappedMutexGuard<'static, InternalEventReader>> {
-    Some(MutexGuard::map(
-        INTERNAL_EVENT_READER.try_lock_for(duration)?,
-        |reader| reader.get_or_insert_with(InternalEventReader::default),
-    ))
-}
 
 /// Checks if there is an [`Event`](enum.Event.html) available.
 ///
@@ -202,7 +182,7 @@ fn try_lock_internal_event_reader_for(
 /// }
 /// ```
 pub fn poll(timeout: Duration) -> std::io::Result<bool> {
-    poll_internal(Some(timeout), &EventFilter)
+    internal::poll(Some(timeout), &EventFilter)
 }
 
 /// Reads a single [`Event`](enum.Event.html).
@@ -247,38 +227,41 @@ pub fn poll(timeout: Duration) -> std::io::Result<bool> {
 /// }
 /// ```
 pub fn read() -> std::io::Result<Event> {
-    match read_internal(&EventFilter)? {
+    match internal::read(&EventFilter)? {
         InternalEvent::Event(event) => Ok(event),
         #[cfg(unix)]
         _ => unreachable!(),
     }
 }
 
-/// Polls to check if there are any `InternalEvent`s that can be read within the given duration.
-pub(crate) fn poll_internal<F>(timeout: Option<Duration>, filter: &F) -> std::io::Result<bool>
-where
-    F: Filter,
-{
-    let (mut reader, timeout) = if let Some(timeout) = timeout {
-        let poll_timeout = PollTimeout::new(Some(timeout));
-        if let Some(reader) = try_lock_internal_event_reader_for(timeout) {
-            (reader, poll_timeout.leftover())
-        } else {
-            return Ok(false);
-        }
-    } else {
-        (lock_internal_event_reader(), None)
-    };
-    reader.poll(timeout, filter)
-}
-
-/// Reads a single `InternalEvent`.
-pub(crate) fn read_internal<F>(filter: &F) -> std::io::Result<InternalEvent>
-where
-    F: Filter,
-{
-    let mut reader = lock_internal_event_reader();
-    reader.read(filter)
+/// Attempts to read a single [`Event`](enum.Event.html) without blocking the thread.
+///
+/// If no event is found, `None` is returned.
+///
+/// # Examples
+///
+/// ```no_run
+/// use crossterm::event::{try_read, poll};
+/// use std::{io, time::Duration};
+///
+/// fn print_all_events() -> io::Result<bool> {
+///     loop {
+///         if poll(Duration::from_millis(100))? {
+///             // Fetch *all* available events at once
+///             while let Some(event) = try_read() {
+///                 // ...
+///             }
+///         }
+///     }
+/// }
+/// ```
+pub fn try_read() -> Option<Event> {
+    match internal::try_read(&EventFilter) {
+        Some(InternalEvent::Event(event)) => Some(event),
+        None => None,
+        #[cfg(unix)]
+        _ => unreachable!(),
+    }
 }
 
 bitflags! {
@@ -546,7 +529,7 @@ impl Command for PopKeyboardEnhancementFlags {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "derive-more", derive(IsVariant))]
 #[cfg_attr(not(feature = "bracketed-paste"), derive(Copy))]
-#[derive(Debug, PartialOrd, PartialEq, Eq, Clone, Hash)]
+#[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Clone, Hash)]
 pub enum Event {
     /// The terminal gained focus
     FocusGained,
@@ -560,7 +543,7 @@ pub enum Event {
     /// enabled.
     #[cfg(feature = "bracketed-paste")]
     Paste(String),
-    /// An resize event with new dimensions after resize (columns, rows).
+    /// A resize event with new dimensions after resize (columns, rows).
     /// **Note** that resize events can occur in batches.
     Resize(u16, u16),
 }
@@ -773,7 +756,7 @@ impl Event {
 /// combinations for all mouse event types. For example - macOS reports
 /// `Ctrl` + left mouse button click as a right mouse button click.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, PartialOrd, PartialEq, Eq, Clone, Copy, Hash)]
+#[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Clone, Copy, Hash)]
 pub struct MouseEvent {
     /// The kind of mouse event that was caused.
     pub kind: MouseEventKind,
@@ -796,7 +779,7 @@ pub struct MouseEvent {
 /// is returned if we don't know which button was used.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "derive-more", derive(IsVariant))]
-#[derive(Debug, PartialOrd, PartialEq, Eq, Clone, Copy, Hash)]
+#[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum MouseEventKind {
     /// Pressed mouse button. Contains the button that was pressed.
     Down(MouseButton),
@@ -816,10 +799,25 @@ pub enum MouseEventKind {
     ScrollRight,
 }
 
+impl MouseEventKind {
+    /// Returns the mouse button connected with the event.
+    ///
+    /// This will return `Some(MouseButton)` for `Down`, `Up`, and `Drag` events.
+    /// For other events, like `Moved` or `Scroll...`, it returns `None`.
+    pub fn button(&self) -> Option<MouseButton> {
+        match self {
+            MouseEventKind::Down(button)
+            | MouseEventKind::Up(button)
+            | MouseEventKind::Drag(button) => Some(*button),
+            _ => None,
+        }
+    }
+}
+
 /// Represents a mouse button.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "derive-more", derive(IsVariant))]
-#[derive(Debug, PartialOrd, PartialEq, Eq, Clone, Copy, Hash)]
+#[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum MouseButton {
     /// Left mouse button.
     Left,
@@ -836,7 +834,7 @@ bitflags! {
     /// [`KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES`] has been enabled with
     /// [`PushKeyboardEnhancementFlags`].
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(transparent))]
-    #[derive(Debug, PartialOrd, PartialEq, Eq, Clone, Copy, Hash)]
+    #[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Clone, Copy, Hash)]
     pub struct KeyModifiers: u8 {
         const SHIFT = 0b0000_0001;
         const CONTROL = 0b0000_0010;
@@ -901,7 +899,7 @@ impl Display for KeyModifiers {
 /// Represents a keyboard event kind.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "derive-more", derive(IsVariant))]
-#[derive(Debug, PartialOrd, PartialEq, Eq, Clone, Copy, Hash)]
+#[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum KeyEventKind {
     Press,
     Repeat,
@@ -914,7 +912,7 @@ bitflags! {
     /// **Note:** This state can only be read if
     /// [`KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES`] has been enabled with
     /// [`PushKeyboardEnhancementFlags`].
-    #[derive(Debug, PartialOrd, PartialEq, Eq, Clone, Copy, Hash)]
+    #[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Clone, Copy, Hash)]
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(transparent))]
     pub struct KeyEventState: u8 {
         /// The key event origins from the keypad.
@@ -933,7 +931,7 @@ bitflags! {
 
 /// Represents a key event.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Debug, PartialOrd, Clone, Copy)]
+#[derive(Debug, PartialOrd, Ord, Clone, Copy)]
 pub struct KeyEvent {
     /// The key itself.
     pub code: KeyCode,
@@ -1072,7 +1070,7 @@ impl Hash for KeyEvent {
 }
 
 /// Represents a media key (as part of [`KeyCode::Media`]).
-#[derive(Debug, PartialOrd, PartialEq, Eq, Clone, Copy, Hash)]
+#[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Clone, Copy, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MediaKeyCode {
     /// Play media key.
@@ -1124,7 +1122,7 @@ impl Display for MediaKeyCode {
 }
 
 /// Represents a modifier key (as part of [`KeyCode::Modifier`]).
-#[derive(Debug, PartialOrd, PartialEq, Eq, Clone, Copy, Hash)]
+#[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Clone, Copy, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ModifierKeyCode {
     /// Left Shift key.
@@ -1220,7 +1218,7 @@ impl Display for ModifierKeyCode {
 }
 
 /// Represents a key.
-#[derive(Debug, PartialOrd, PartialEq, Eq, Clone, Copy, Hash)]
+#[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Clone, Copy, Hash)]
 #[cfg_attr(feature = "derive-more", derive(IsVariant))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum KeyCode {
@@ -1446,11 +1444,11 @@ impl Display for KeyCode {
             KeyCode::Tab => write!(f, "Tab"),
             KeyCode::BackTab => write!(f, "Back Tab"),
             KeyCode::Insert => write!(f, "Insert"),
-            KeyCode::F(n) => write!(f, "F{}", n),
+            KeyCode::F(n) => write!(f, "F{n}"),
             KeyCode::Char(c) => match c {
                 // special case for non-visible characters
                 ' ' => write!(f, "Space"),
-                c => write!(f, "{}", c),
+                c => write!(f, "{c}"),
             },
             KeyCode::Null => write!(f, "Null"),
             KeyCode::Esc => write!(f, "Esc"),
@@ -1461,29 +1459,10 @@ impl Display for KeyCode {
             KeyCode::Pause => write!(f, "Pause"),
             KeyCode::Menu => write!(f, "Menu"),
             KeyCode::KeypadBegin => write!(f, "Begin"),
-            KeyCode::Media(media) => write!(f, "{}", media),
-            KeyCode::Modifier(modifier) => write!(f, "{}", modifier),
+            KeyCode::Media(media) => write!(f, "{media}"),
+            KeyCode::Modifier(modifier) => write!(f, "{modifier}"),
         }
     }
-}
-
-/// An internal event.
-///
-/// Encapsulates publicly available `Event` with additional internal
-/// events that shouldn't be publicly available to the crate users.
-#[derive(Debug, PartialOrd, PartialEq, Hash, Clone, Eq)]
-pub(crate) enum InternalEvent {
-    /// An event.
-    Event(Event),
-    /// A cursor position (`col`, `row`).
-    #[cfg(unix)]
-    CursorPosition(u16, u16),
-    /// The progressive keyboard enhancement flags enabled by the terminal.
-    #[cfg(unix)]
-    KeyboardEnhancementFlags(KeyboardEnhancementFlags),
-    /// Attributes and architectural class of the terminal.
-    #[cfg(unix)]
-    PrimaryDeviceAttributes,
 }
 
 #[cfg(test)]
@@ -1530,9 +1509,9 @@ mod tests {
     fn keycode_display() {
         #[cfg(target_os = "macos")]
         {
-            assert_eq!(format!("{}", Backspace), "Delete");
-            assert_eq!(format!("{}", Delete), "Fwd Del");
-            assert_eq!(format!("{}", Enter), "Return");
+            assert_eq!(format!("{Backspace}"), "Delete");
+            assert_eq!(format!("{Delete}"), "Fwd Del");
+            assert_eq!(format!("{Enter}"), "Return");
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -1540,28 +1519,28 @@ mod tests {
             assert_eq!(format!("{}", Delete), "Del");
             assert_eq!(format!("{}", Enter), "Enter");
         }
-        assert_eq!(format!("{}", Left), "Left");
-        assert_eq!(format!("{}", Right), "Right");
-        assert_eq!(format!("{}", Up), "Up");
-        assert_eq!(format!("{}", Down), "Down");
-        assert_eq!(format!("{}", Home), "Home");
-        assert_eq!(format!("{}", End), "End");
-        assert_eq!(format!("{}", PageUp), "Page Up");
-        assert_eq!(format!("{}", PageDown), "Page Down");
-        assert_eq!(format!("{}", Tab), "Tab");
-        assert_eq!(format!("{}", BackTab), "Back Tab");
-        assert_eq!(format!("{}", Insert), "Insert");
+        assert_eq!(format!("{Left}"), "Left");
+        assert_eq!(format!("{Right}"), "Right");
+        assert_eq!(format!("{Up}"), "Up");
+        assert_eq!(format!("{Down}"), "Down");
+        assert_eq!(format!("{Home}"), "Home");
+        assert_eq!(format!("{End}"), "End");
+        assert_eq!(format!("{PageUp}"), "Page Up");
+        assert_eq!(format!("{PageDown}"), "Page Down");
+        assert_eq!(format!("{Tab}"), "Tab");
+        assert_eq!(format!("{BackTab}"), "Back Tab");
+        assert_eq!(format!("{Insert}"), "Insert");
         assert_eq!(format!("{}", F(1)), "F1");
         assert_eq!(format!("{}", Char('a')), "a");
-        assert_eq!(format!("{}", Null), "Null");
-        assert_eq!(format!("{}", Esc), "Esc");
-        assert_eq!(format!("{}", CapsLock), "Caps Lock");
-        assert_eq!(format!("{}", ScrollLock), "Scroll Lock");
-        assert_eq!(format!("{}", NumLock), "Num Lock");
-        assert_eq!(format!("{}", PrintScreen), "Print Screen");
+        assert_eq!(format!("{Null}"), "Null");
+        assert_eq!(format!("{Esc}"), "Esc");
+        assert_eq!(format!("{CapsLock}"), "Caps Lock");
+        assert_eq!(format!("{ScrollLock}"), "Scroll Lock");
+        assert_eq!(format!("{NumLock}"), "Num Lock");
+        assert_eq!(format!("{PrintScreen}"), "Print Screen");
         assert_eq!(format!("{}", KeyCode::Pause), "Pause");
-        assert_eq!(format!("{}", Menu), "Menu");
-        assert_eq!(format!("{}", KeypadBegin), "Begin");
+        assert_eq!(format!("{Menu}"), "Menu");
+        assert_eq!(format!("{KeypadBegin}"), "Begin");
     }
 
     #[test]
@@ -1743,5 +1722,20 @@ mod tests {
             assert_eq!(event.as_paste_event(), Some(""));
             assert_eq!(event.as_key_event(), None);
         }
+    }
+
+    #[test]
+    fn event_button() {
+        let event = MouseEventKind::Down(MouseButton::Left);
+        assert_eq!(event.button(), Some(MouseButton::Left));
+
+        let event = MouseEventKind::Up(MouseButton::Right);
+        assert_eq!(event.button(), Some(MouseButton::Right));
+
+        let event = MouseEventKind::Drag(MouseButton::Middle);
+        assert_eq!(event.button(), Some(MouseButton::Middle));
+
+        let event = MouseEventKind::Moved;
+        assert_eq!(event.button(), None);
     }
 }

@@ -1,10 +1,13 @@
 use std::{
-    io::{self, Error, ErrorKind, Write},
+    io::{self, Error, Write},
     time::Duration,
 };
 
 use crate::{
-    event::{filter::CursorPositionFilter, poll_internal, read_internal, InternalEvent},
+    event::{
+        filter::CursorPositionFilter,
+        internal::{self, InternalEvent},
+    },
     terminal::{disable_raw_mode, enable_raw_mode, sys::is_raw_mode_enabled},
 };
 
@@ -30,23 +33,29 @@ fn read_position() -> io::Result<(u16, u16)> {
 }
 
 fn read_position_raw() -> io::Result<(u16, u16)> {
+    // Discard any buffered cursor-position replies from earlier `ESC[6n` requests so the
+    // position returned below corresponds to the fresh request we are about to send.
+    // Poll with a zero timeout to drain only already-available events without blocking.
+    while let Ok(true) = internal::poll(Some(Duration::ZERO), &CursorPositionFilter) {
+        let _ = internal::read(&CursorPositionFilter);
+    }
+
     // Use `ESC [ 6 n` to and retrieve the cursor position.
     let mut stdout = io::stdout();
     stdout.write_all(b"\x1B[6n")?;
     stdout.flush()?;
 
     loop {
-        match poll_internal(Some(Duration::from_millis(2000)), &CursorPositionFilter) {
+        match internal::poll(Some(Duration::from_millis(2000)), &CursorPositionFilter) {
             Ok(true) => {
                 if let Ok(InternalEvent::CursorPosition(x, y)) =
-                    read_internal(&CursorPositionFilter)
+                    internal::read(&CursorPositionFilter)
                 {
                     return Ok((x, y));
                 }
             }
             Ok(false) => {
-                return Err(Error::new(
-                    ErrorKind::Other,
+                return Err(Error::other(
                     "The cursor position could not be read within a normal duration",
                 ));
             }

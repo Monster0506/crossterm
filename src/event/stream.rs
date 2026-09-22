@@ -2,9 +2,9 @@ use std::{
     io,
     pin::Pin,
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, SyncSender},
-        Arc,
     },
     task::{Context, Poll},
     thread,
@@ -14,8 +14,10 @@ use std::{
 use futures_core::stream::Stream;
 
 use crate::event::{
-    filter::EventFilter, lock_internal_event_reader, poll_internal, read_internal, sys::Waker,
-    Event, InternalEvent,
+    Event,
+    filter::EventFilter,
+    internal::{self, InternalEvent},
+    sys::Waker,
 };
 
 /// A stream of `Result<Event>`.
@@ -24,7 +26,7 @@ use crate::event::{
 /// to make it available.**
 ///
 /// It implements the [Stream](futures_core::stream::Stream)
-/// trait and allows you to receive [`Event`]s with [`async-std`](https://crates.io/crates/async-std)
+/// trait and allows you to receive [`Event`]s with [`smol`](https://crates.io/crates/smol)
 /// or [`tokio`](https://crates.io/crates/tokio) crates.
 ///
 /// Check the [examples](https://github.com/crossterm-rs/crossterm/tree/master/examples) folder to see how to use
@@ -44,7 +46,7 @@ impl Default for EventStream {
         thread::spawn(move || {
             while let Ok(task) = receiver.recv() {
                 loop {
-                    if let Ok(true) = poll_internal(None, &EventFilter) {
+                    if let Ok(true) = internal::poll(None, &EventFilter) {
                         break;
                     }
 
@@ -59,7 +61,7 @@ impl Default for EventStream {
         });
 
         EventStream {
-            poll_internal_waker: lock_internal_event_reader().waker(),
+            poll_internal_waker: internal::lock_event_reader().waker(),
             stream_wake_task_executed: Arc::new(AtomicBool::new(false)),
             stream_wake_task_should_shutdown: Arc::new(AtomicBool::new(false)),
             task_sender,
@@ -102,8 +104,8 @@ impl Stream for EventStream {
     type Item = io::Result<Event>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let result = match poll_internal(Some(Duration::from_secs(0)), &EventFilter) {
-            Ok(true) => match read_internal(&EventFilter) {
+        match internal::poll(Some(Duration::from_secs(0)), &EventFilter) {
+            Ok(true) => match internal::read(&EventFilter) {
                 Ok(InternalEvent::Event(event)) => Poll::Ready(Some(Ok(event))),
                 Err(e) => Poll::Ready(Some(Err(e))),
                 #[cfg(unix)]
@@ -132,8 +134,7 @@ impl Stream for EventStream {
                 Poll::Pending
             }
             Err(e) => Poll::Ready(Some(Err(e))),
-        };
-        result
+        }
     }
 }
 

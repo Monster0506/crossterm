@@ -5,12 +5,12 @@
 //! ## Implemented operations:
 //!
 //! - Copy: [`CopyToClipboard`](struct.CopyToClipboard.html)
-use base64::prelude::{Engine, BASE64_STANDARD};
+use base64::prelude::{BASE64_STANDARD, Engine};
 
 use std::fmt;
 use std::str::FromStr;
 
-use crate::{osc, Command};
+use crate::{Command, osc};
 
 /// Different clipboard types
 ///
@@ -70,7 +70,7 @@ pub struct ClipboardSelection(
 );
 
 impl ClipboardSelection {
-    /// Returns a String corresponsing to the "Pc" parameter of the OSC52
+    /// Returns a String corresponding to the "Pc" parameter of the OSC52
     /// sequence.
     fn to_osc52_pc(&self) -> String {
         self.0.iter().map(Into::<char>::into).collect()

@@ -73,7 +73,7 @@ pub(crate) fn reset() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Initializes the default console color. It will will be skipped if it has already been initialized.
+/// Initializes the default console color. It will be skipped if it has already been initialized.
 pub(crate) fn init_console_color() -> std::io::Result<()> {
     if ORIGINAL_CONSOLE_COLOR.load(Ordering::Relaxed) == u32::MAX {
         let screen_buffer = ScreenBuffer::current()?;
@@ -177,7 +177,7 @@ mod tests {
     use crate::style::sys::windows::set_foreground_color;
 
     use super::{
-        Color, Colored, BG_INTENSITY, BG_RED, FG_INTENSITY, FG_RED, ORIGINAL_CONSOLE_COLOR,
+        BG_INTENSITY, BG_RED, Color, Colored, FG_INTENSITY, FG_RED, ORIGINAL_CONSOLE_COLOR,
     };
 
     #[test]
